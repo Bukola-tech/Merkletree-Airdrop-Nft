@@ -34,8 +34,8 @@ fs.createReadStream(csvFilePath)
 
     // Extracting proof for this address
     const dataleavestarget = {
-        address: "0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2",
-        amount:'105'
+        address: "0x98E711f31E49C2e50C1A290b6F2b1e493E43EA76",
+        amount:'500'
     }
     const eachdataleaf = datahash(dataleavestarget)
 
@@ -58,6 +58,8 @@ fs.createReadStream(csvFilePath)
 //     '0xb25d410bef5113170f9d9917ad80317812261baa525ae4e1d094df28bf91caad'
 //   ]
 //   Proof is valid: true
+
+
 )
 
 

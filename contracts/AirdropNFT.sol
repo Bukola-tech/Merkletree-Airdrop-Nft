@@ -2,7 +2,7 @@
 pragma solidity ^0.8.17;
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 
 contract MerkleDistributor {
@@ -24,19 +24,21 @@ contract MerkleDistributor {
     address admin;
     address public immutable tokenContract;
     bytes32 public merkleRootHash;
-    address public immutable baycNFT;
+    // address public immutable baycNFT;
     uint256 totalDistributedAmount;
+
+    address public constant BAYC_NFT_ADDRESS = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
 
     // @dev mapping to track users that have claimed
     mapping(address => bool) hasClaimed;
 
       address public nftContractAddress;
 
-    constructor(address _tokenContract, bytes32 _merkleRootHash, address _nftContractAddress) {
+    constructor(address _tokenContract, bytes32 _merkleRootHash ) {
         tokenContract = _tokenContract;
         merkleRootHash = _merkleRootHash;
         admin = msg.sender;
-        baycNFT = _nftContractAddress;
+        
     }
 
     // @dev prevents zero address from interacting with the contract
@@ -69,7 +71,9 @@ contract MerkleDistributor {
     function getTokenBalance() public view returns (uint256) {
         onlyAdmin();
         return IERC20(tokenContract).balanceOf(address(this));
+
     }
+    //impersonate
 
     // @user for claiming airdrop
       function claimTokens(
@@ -79,15 +83,33 @@ contract MerkleDistributor {
         if (hasClaimed[msg.sender]) {
             revert RewardsAlreadyClaimed();
         }
-        if (IERC721(baycNFT).balanceOf(msg.sender) == 0) {
+        if (IERC721(BAYC_NFT_ADDRESS).balanceOf(msg.sender) == 0) {
             revert NoNFTBalance();
         }
 
         // @dev hash the encoded byte form of the user address and amount to create a leaf
-        bytes32 leaf = keccak256(abi.encodePacked(msg.sender, _amount));
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(msg.sender, _amount))));
 
         // @dev check if the merkleProof provided is valid or belongs to the merkleRoot
-        if (!MerkleProof.verify(_merkleProof, merkleRootHash, leaf)) {
+        // if (!MerkleProof.verify(_merkleProof, merkleRootHash, leaf)) {
+        //     revert InvalidProof();
+        // }
+
+        // @dev merkletreejs implementation of merkle proof verification
+        for (uint256 i = 0; i < _merkleProof.length; i++) {
+            bytes32 proofElement = _merkleProof[i];
+
+            if (leaf <= proofElement) {
+                // Hash(current computed hash + current element of the proof)
+                leaf = keccak256(abi.encodePacked(leaf, proofElement));
+            } else {
+                // Hash(current element of the proof + current computed hash)
+                leaf = keccak256(abi.encodePacked(proofElement, leaf));
+            }
+        }
+
+        // Check if the computed hash (root) is equal to the provided root
+        if (leaf != merkleRootHash) {
             revert InvalidProof();
         }
 

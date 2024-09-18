@@ -1,97 +1,93 @@
 import {
-  time,
   loadFixture,
+  setBalance,
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
-import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
 import hre from "hardhat";
 import { ethers } from "hardhat";
 import { MerkleTree } from "merkletreejs";
 import keccak256 from "keccak256";
 
-
 describe("MerkleDistributor", function () {
-  async function deployFixture() {
+  async function deployERC20() {
     const [owner, addr1, addr2] = await ethers.getSigners();
-
-    // Use the actual BAYC NFT address
-    const baycNFTAddress = "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D";
-
-    // Use the actual ERC20 token address (e.g., USDC)
-    const tokenAddress = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-
-    // Impersonate USDC whale account to get tokens
-    const usdcWhaleAddress = "0x55FE002aefF02F77364de339a1292923A15844B8";
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [usdcWhaleAddress],
-    });
-    const usdcWhale = await ethers.getSigner(usdcWhaleAddress);
-
-    const Token = await ethers.getContractFactory("IERC20");
-    const token = Token.attach(tokenAddress);
-
-    const NFT = await ethers.getContractFactory("IERC721");
-    const nft = NFT.attach(baycNFTAddress);
-
-    const leaves = [addr1, addr2].map(addr => 
-      ethers.utils.solidityKeccak256(["address", "uint256"], [addr.address, ethers.utils.parseEther("100")])
-    );
-    const merkleTree = new MerkleTree(leaves, keccak256, { sortPairs: true });
-    const rootHash = merkleTree.getHexRoot();
-
-    const MerkleDistributor = await ethers.getContractFactory("MerkleDistributor");
-    const merkleDistributor = await MerkleDistributor.deploy(tokenAddress, rootHash, baycNFTAddress);
-
-    // Transfer tokens to MerkleDistributor
-    await token.connect(usdcWhale).transfer(merkleDistributor.address, ethers.utils.parseUnits("1000", 6));
-
-    // Transfer BAYC NFTs to addr1 and addr2 (this is a simplified version, as transferring actual BAYC tokens would be complex)
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [await nft.ownerOf(1)],
-    });
-    const nftOwner = await ethers.getSigner(await nft.ownerOf(1));
-    await nft.connect(nftOwner).transferFrom(nftOwner.address, addr1.address, 1);
-    await nft.connect(nftOwner).transferFrom(nftOwner.address, addr2.address, 2);
-
-    return { merkleDistributor, token, nft, owner, addr1, addr2, merkleTree, rootHash };
+    const ERC20 = await ethers.getContractFactory("Token");
+    const token = await ERC20.deploy();
+    return{token};
   }
 
-  it("Should allow eligible users to claim tokens", async function () {
-    const { merkleDistributor, token, addr1, merkleTree } = await deployFixture();
+  async function deployAirdrop() {
+    const [owner, Acc1, Acc2] = await ethers.getSigners();
 
-    const proof = merkleTree.getHexProof(ethers.utils.solidityKeccak256(
-      ["address", "uint256"], 
-      [addr1.address, ethers.utils.parseEther("100")]
-    ));
+    const merkleRootHash = "0xb0643b41431092149c186135faee23ff4709260e091e8493cbea55656276959e";
+    // const merkleRootHash = "0x9f961e5d27845557de9414fd8eef3c3d1cae2234679c1c308bc929c3a9279e75";
+    const { token } = await loadFixture(deployERC20);
 
-    await expect(merkleDistributor.connect(addr1).claimTokens(ethers.utils.parseUnits("100", 6), proof))
-      .to.emit(merkleDistributor, "AirdropClaimed")
-      .withArgs(addr1.address, ethers.utils.parseUnits("100", 6));
+    const NFT = await ethers.getContractFactory("MerkleDistributor");
+    const nft = await NFT.deploy(token, merkleRootHash);
+    await token.transfer(nft, ethers.parseUnits("10000", 18))
 
-    expect(await token.balanceOf(addr1.address)).to.equal(ethers.utils.parseUnits("100", 6));
+    const nftHolderAddy = "0x98E711f31E49C2e50C1A290b6F2b1e493E43EA76"
+    const impersonatedAddy = await ethers.getImpersonatedSigner(nftHolderAddy)
+
+    const proof = [
+    //   '0x6cb0a5b84246566db34be4ba40a2edea52daf7c813991e066dd9a6bc4630bdc0',
+    //   '0xbde0d9d35f3068fda51a2f74f91363a61565bdf8fa873c93f70cfd15ad29774c',
+    //   '0x2374aeb5ed569f700ac78ee401405c3279a87af3c43b612a40048dc56db98a29'
+    // ]
+      '0x3b6db8745c616747d31432d738f62e9411f5ef3efdb739cfa281187f32f8f942',
+      '0x806bee5701af3b925fb8870ceb70bdd58f8911775934079313fd5b2e3e65be90'
+    ]
+
+    return {token, nft, owner, Acc1, Acc2, proof, impersonatedAddy}
+  }
+
+  describe("Deployment", function () {
+    it("should deploy the contracts correctly", async function () {
+      const { token, nft, owner } = await loadFixture(deployAirdrop);
+
+      expect(await token.owner()).to.equal(owner);
+      expect(await nft.tokenContract()).to.equal(token);
+      expect(await nft.merkleRootHash()).to.equal("0xb0643b41431092149c186135faee23ff4709260e091e8493cbea55656276959e");
+    });    
+  })
+  
+  describe("claimTokens", function () {
+    it("should give airdrop to eligible address", async function () {
+      const {nft, impersonatedAddy, proof, token}  = await loadFixture(deployAirdrop);
+      
+      await setBalance(impersonatedAddy.address, ethers.parseEther("1"))
+      await nft.connect(impersonatedAddy).claimTokens("500", proof)
+      const balance = await token.balanceOf(impersonatedAddy)
+      const totalBal = balance + BigInt(500)
+
+      expect(await token.balanceOf(impersonatedAddy)).to.equal(500)
+    })
+
+    it("should not give user with wrong proof", async function () {
+      const {nft, impersonatedAddy}  = await loadFixture(deployAirdrop);
+      
+      const wrongProof = [
+        '0x6cb0a5b84246566db34be4ba40a2edea52daf7c813991e066dd9a6bc4630aef2',
+        '0xbde0d9d35f3068fda51a2f74f91363a61565bdf8fa873c93f70cfd15ad297776',
+        '0x2374aeb5ed569f700ac78ee401405c3279a87af3c43b612a40048dc56db98a28'
+      ]
+
+      await setBalance(impersonatedAddy.address, ethers.parseEther("1"));
+      await expect(nft.connect(impersonatedAddy).claimTokens("500", wrongProof)).to.revertedWithCustomError(nft,"InvalidProof")
+
+    })
+
+    //repeat claim twice
+    it("Should revert if user has claimed", async function () {
+      const {nft, impersonatedAddy, proof, token}  = await loadFixture(deployAirdrop);
+      
+      await setBalance(impersonatedAddy.address, ethers.parseEther("1"))
+      await nft.connect(impersonatedAddy).claimTokens("500", proof)
+      await expect(nft.connect(impersonatedAddy).claimTokens("500", proof)
+    ).to.be.revertedWithCustomError(nft, "RewardsAlreadyClaimed");
+      
+      expect(await token.balanceOf(impersonatedAddy)).to.equal(500)
+    });
   });
-
-  it("Should not allow non-NFT holders to claim", async function () {
-    const { merkleDistributor, owner, merkleTree } = await deployFixture();
-
-    const proof = merkleTree.getHexProof(ethers.utils.solidityKeccak256(
-      ["address", "uint256"], 
-      [owner.address, ethers.utils.parseEther("100")]
-    ));
-
-    await expect(merkleDistributor.claimTokens(ethers.utils.parseUnits("100", 6), proof))
-      .to.be.revertedWith("NoNFTBalance");
-  });
-
-  it("Should allow admin to update merkle root", async function () {
-    const { merkleDistributor } = await deployFixture();
-
-    const newRootHash = ethers.utils.randomBytes(32);
-    await merkleDistributor.setMerkleRoot(newRootHash);
-    expect(await merkleDistributor.getCurrentMerkleRoot()).to.equal(ethers.utils.hexlify(newRootHash));
-  });
-
-  // Add more tests for other functions and edge cases
 });
