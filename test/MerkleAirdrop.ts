@@ -5,123 +5,93 @@ import {
 import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
 import hre from "hardhat";
+import { ethers } from "hardhat";
+import { MerkleTree } from "merkletreejs";
+import keccak256 from "keccak256";
 
-describe("Lock", function () {
-  // We define a fixture to reuse the same setup in every test.
-  // We use loadFixture to run this setup once, snapshot that state,
-  // and reset Hardhat Network to that snapshot in every test.
-  async function deployOneYearLockFixture() {
-    const ONE_YEAR_IN_SECS = 365 * 24 * 60 * 60;
-    const ONE_GWEI = 1_000_000_000;
 
-    const lockedAmount = ONE_GWEI;
-    const unlockTime = (await time.latest()) + ONE_YEAR_IN_SECS;
+describe("MerkleDistributor", function () {
+  async function deployFixture() {
+    const [owner, addr1, addr2] = await ethers.getSigners();
 
-    // Contracts are deployed using the first signer/account by default
-    const [owner, otherAccount] = await hre.ethers.getSigners();
+    // Use the actual BAYC NFT address
+    const baycNFTAddress = "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D";
 
-    const Lock = await hre.ethers.getContractFactory("Lock");
-    const lock = await Lock.deploy(unlockTime, { value: lockedAmount });
+    // Use the actual ERC20 token address (e.g., USDC)
+    const tokenAddress = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 
-    return { lock, unlockTime, lockedAmount, owner, otherAccount };
+    // Impersonate USDC whale account to get tokens
+    const usdcWhaleAddress = "0x55FE002aefF02F77364de339a1292923A15844B8";
+    await hre.network.provider.request({
+      method: "hardhat_impersonateAccount",
+      params: [usdcWhaleAddress],
+    });
+    const usdcWhale = await ethers.getSigner(usdcWhaleAddress);
+
+    const Token = await ethers.getContractFactory("IERC20");
+    const token = Token.attach(tokenAddress);
+
+    const NFT = await ethers.getContractFactory("IERC721");
+    const nft = NFT.attach(baycNFTAddress);
+
+    const leaves = [addr1, addr2].map(addr => 
+      ethers.utils.solidityKeccak256(["address", "uint256"], [addr.address, ethers.utils.parseEther("100")])
+    );
+    const merkleTree = new MerkleTree(leaves, keccak256, { sortPairs: true });
+    const rootHash = merkleTree.getHexRoot();
+
+    const MerkleDistributor = await ethers.getContractFactory("MerkleDistributor");
+    const merkleDistributor = await MerkleDistributor.deploy(tokenAddress, rootHash, baycNFTAddress);
+
+    // Transfer tokens to MerkleDistributor
+    await token.connect(usdcWhale).transfer(merkleDistributor.address, ethers.utils.parseUnits("1000", 6));
+
+    // Transfer BAYC NFTs to addr1 and addr2 (this is a simplified version, as transferring actual BAYC tokens would be complex)
+    await hre.network.provider.request({
+      method: "hardhat_impersonateAccount",
+      params: [await nft.ownerOf(1)],
+    });
+    const nftOwner = await ethers.getSigner(await nft.ownerOf(1));
+    await nft.connect(nftOwner).transferFrom(nftOwner.address, addr1.address, 1);
+    await nft.connect(nftOwner).transferFrom(nftOwner.address, addr2.address, 2);
+
+    return { merkleDistributor, token, nft, owner, addr1, addr2, merkleTree, rootHash };
   }
 
-  describe("Deployment", function () {
-    it("Should set the right unlockTime", async function () {
-      const { lock, unlockTime } = await loadFixture(deployOneYearLockFixture);
+  it("Should allow eligible users to claim tokens", async function () {
+    const { merkleDistributor, token, addr1, merkleTree } = await deployFixture();
 
-      expect(await lock.unlockTime()).to.equal(unlockTime);
-    });
+    const proof = merkleTree.getHexProof(ethers.utils.solidityKeccak256(
+      ["address", "uint256"], 
+      [addr1.address, ethers.utils.parseEther("100")]
+    ));
 
-    it("Should set the right owner", async function () {
-      const { lock, owner } = await loadFixture(deployOneYearLockFixture);
+    await expect(merkleDistributor.connect(addr1).claimTokens(ethers.utils.parseUnits("100", 6), proof))
+      .to.emit(merkleDistributor, "AirdropClaimed")
+      .withArgs(addr1.address, ethers.utils.parseUnits("100", 6));
 
-      expect(await lock.owner()).to.equal(owner.address);
-    });
-
-    it("Should receive and store the funds to lock", async function () {
-      const { lock, lockedAmount } = await loadFixture(
-        deployOneYearLockFixture
-      );
-
-      expect(await hre.ethers.provider.getBalance(lock.target)).to.equal(
-        lockedAmount
-      );
-    });
-
-    it("Should fail if the unlockTime is not in the future", async function () {
-      // We don't use the fixture here because we want a different deployment
-      const latestTime = await time.latest();
-      const Lock = await hre.ethers.getContractFactory("Lock");
-      await expect(Lock.deploy(latestTime, { value: 1 })).to.be.revertedWith(
-        "Unlock time should be in the future"
-      );
-    });
+    expect(await token.balanceOf(addr1.address)).to.equal(ethers.utils.parseUnits("100", 6));
   });
 
-  describe("Withdrawals", function () {
-    describe("Validations", function () {
-      it("Should revert with the right error if called too soon", async function () {
-        const { lock } = await loadFixture(deployOneYearLockFixture);
+  it("Should not allow non-NFT holders to claim", async function () {
+    const { merkleDistributor, owner, merkleTree } = await deployFixture();
 
-        await expect(lock.withdraw()).to.be.revertedWith(
-          "You can't withdraw yet"
-        );
-      });
+    const proof = merkleTree.getHexProof(ethers.utils.solidityKeccak256(
+      ["address", "uint256"], 
+      [owner.address, ethers.utils.parseEther("100")]
+    ));
 
-      it("Should revert with the right error if called from another account", async function () {
-        const { lock, unlockTime, otherAccount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        // We can increase the time in Hardhat Network
-        await time.increaseTo(unlockTime);
-
-        // We use lock.connect() to send a transaction from another account
-        await expect(lock.connect(otherAccount).withdraw()).to.be.revertedWith(
-          "You aren't the owner"
-        );
-      });
-
-      it("Shouldn't fail if the unlockTime has arrived and the owner calls it", async function () {
-        const { lock, unlockTime } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        // Transactions are sent using the first signer by default
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).not.to.be.reverted;
-      });
-    });
-
-    describe("Events", function () {
-      it("Should emit an event on withdrawals", async function () {
-        const { lock, unlockTime, lockedAmount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw())
-          .to.emit(lock, "Withdrawal")
-          .withArgs(lockedAmount, anyValue); // We accept any value as `when` arg
-      });
-    });
-
-    describe("Transfers", function () {
-      it("Should transfer the funds to the owner", async function () {
-        const { lock, unlockTime, lockedAmount, owner } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).to.changeEtherBalances(
-          [owner, lock],
-          [lockedAmount, -lockedAmount]
-        );
-      });
-    });
+    await expect(merkleDistributor.claimTokens(ethers.utils.parseUnits("100", 6), proof))
+      .to.be.revertedWith("NoNFTBalance");
   });
+
+  it("Should allow admin to update merkle root", async function () {
+    const { merkleDistributor } = await deployFixture();
+
+    const newRootHash = ethers.utils.randomBytes(32);
+    await merkleDistributor.setMerkleRoot(newRootHash);
+    expect(await merkleDistributor.getCurrentMerkleRoot()).to.equal(ethers.utils.hexlify(newRootHash));
+  });
+
+  // Add more tests for other functions and edge cases
 });
